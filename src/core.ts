@@ -10,6 +10,14 @@ import { PathLike } from "fs";
 let pageCounter = 0;
 let crawler: PlaywrightCrawler;
 
+async function sleep(milliseconds: number | undefined) {
+  return await new Promise<void>((r, _) => {
+      setTimeout(() => {
+          r();
+      }, milliseconds);
+  });
+}
+
 export function getPageHtml(page: Page, selector = "body") {
   return page.evaluate((selector) => {
     // Check if the selector is an XPath
@@ -51,6 +59,8 @@ export async function waitForXPath(page: Page, xpath: string, timeout: number) {
 export async function crawl(config: Config) {
   configSchema.parse(config);
 
+  const eventUrlPatterns = [/event/, /events/, /music/, /lineup/];
+
   if (process.env.NO_CRAWL !== "true") {
     // PlaywrightCrawler crawls the web using a headless
     // browser controlled by the Playwright library.
@@ -58,11 +68,14 @@ export async function crawl(config: Config) {
       {
         // Use the requestHandler to process each of the crawled pages.
         async requestHandler({ request, page, enqueueLinks, log, pushData }) {
+          await page.goto(request.url, { waitUntil: 'networkidle' }); // Ensure the page has loaded and network is idle
           const title = await page.title();
           pageCounter++;
           log.info(
             `Crawling: Page ${pageCounter} / ${config.maxPagesToCrawl} - URL: ${request.loadedUrl}...`,
           );
+
+          const urlMatchesCriteria = eventUrlPatterns.some(pattern => pattern.test(request.url));
 
           // Use custom handling for XPath selector
           if (config.selector) {
@@ -79,10 +92,15 @@ export async function crawl(config: Config) {
             }
           }
 
-          const html = await getPageHtml(page, config.selector);
-
-          // Save results as JSON to ./storage/datasets/default
-          await pushData({ title, url: request.loadedUrl, html });
+          if (urlMatchesCriteria) {
+            // Proceed to process this page as it matches the criteria
+            const html = await getPageHtml(page, config.selector);
+            // Save results as JSON to ./storage/datasets/default
+            await pushData({ title, url: request.loadedUrl, html });
+        } else {
+            // This URL does not match the event criteria, so we can skip detailed processing
+            log.info(`Skipping: URL does not match event criteria - ${request.url}`);
+        }
 
           if (config.onVisitPage) {
             await config.onVisitPage({ page, pushData });
@@ -100,7 +118,7 @@ export async function crawl(config: Config) {
           });
         },
         // Comment this option to scrape the full website.
-        maxRequestsPerCrawl: config.maxPagesToCrawl,
+        // maxRequestsPerCrawl: config.maxPagesToCrawl,
         // Uncomment this option to see the browser window.
         // headless: false,
         preNavigationHooks: [
